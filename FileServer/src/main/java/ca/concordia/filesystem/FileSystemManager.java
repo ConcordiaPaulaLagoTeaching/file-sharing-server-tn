@@ -8,6 +8,8 @@ import java.io.RandomAccessFile;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.locks.ReentrantLock;
+import java.util.concurrent.locks.ReentrantReadWriteLock;
+import java.util.concurrent.ConcurrentHashMap;
 
 public class FileSystemManager {
 
@@ -15,14 +17,32 @@ public class FileSystemManager {
     private final int MAXBLOCKS = 10;
     private static FileSystemManager instance = null;
     private final RandomAccessFile disk;
-    private final ReentrantLock globalLock = new ReentrantLock();
-
+    
+    // Synchronization for metadata operations (create, delete, list)
+    private final ReentrantLock metadataLock = new ReentrantLock();
+    
+    // Per-file locks to allow concurrent operations on different files
+    private final ConcurrentHashMap<String, ReentrantReadWriteLock> perFileLocks = new ConcurrentHashMap<>();
 
     private static final int BLOCK_SIZE = 128;
 
     private FEntry[] inodeTable; // Array of inodes
     private boolean[] freeBlockList; // Bitmap for free blocks
     private FNode[] blockNodes; // Block chain nodes
+    
+    /**
+     * Get or create a per-file lock for the given filename
+     */
+    private ReentrantReadWriteLock getFileLock(String fileName) {
+        return perFileLocks.computeIfAbsent(fileName, k -> new ReentrantReadWriteLock());
+    }
+    
+    /**
+     * Remove per-file lock when file is deleted
+     */
+    private void removeFileLock(String fileName) {
+        perFileLocks.remove(fileName);
+    }
 
 
 
@@ -54,7 +74,8 @@ public class FileSystemManager {
 
 
     public void createFile(String fileName) throws Exception {
-        globalLock.lock();
+        // Metadata operations need exclusive access to the inode table
+        metadataLock.lock();
         try {
             // Validate filename length
             if (fileName.length() > 11) {
@@ -88,19 +109,20 @@ public class FileSystemManager {
             
 
         } finally {
-            globalLock.unlock();
+            metadataLock.unlock();
         }
     }
 
 
 
     public byte[] readFile(String fileName) throws Exception {
-        globalLock.lock();
+        // Use per-file read lock to allow multiple concurrent readers
+        ReentrantReadWriteLock fileLock = getFileLock(fileName);
+        fileLock.readLock().lock();
         try {
             // Finding the file
             FEntry fileEntry = findFile(fileName);
             if (fileEntry == null) {
-
                 throw new Exception("file is not found:" + fileName);
             }
             
@@ -113,18 +135,14 @@ public class FileSystemManager {
             short currentBlock = fileEntry.getFirstBlock();
             
             while (currentBlock != -1 && bytesRead < fileEntry.getFilesize()) {
-
                 // Read from current block
-
                 disk.seek(currentBlock * BLOCK_SIZE);
                 int bytesToRead = Math.min(BLOCK_SIZE, fileEntry.getFilesize() - bytesRead);
                 disk.read(data, bytesRead, bytesToRead);
                 bytesRead += bytesToRead;
                 
                 // Move to next block
-
                 if (blockNodes[currentBlock].hasNext()) {
-
                     currentBlock = (short) blockNodes[currentBlock].getNext();
                 } else {
                     break;
@@ -133,7 +151,7 @@ public class FileSystemManager {
             
             return data;
         } finally {
-            globalLock.unlock();
+            fileLock.readLock().unlock();
         }
     }
 
@@ -141,136 +159,143 @@ public class FileSystemManager {
 
 
     public void writeFile(String fileName, byte[] data) throws Exception {
-        globalLock.lock();
+        // Use per-file write lock to ensure exclusive writing
+        ReentrantReadWriteLock fileLock = getFileLock(fileName);
+        fileLock.writeLock().lock();
         try {
-            // Find the file
-            FEntry fileEntry = findFile(fileName);
-            if (fileEntry == null) {
-                throw new Exception("File does not exist: " + fileName);
-            }
-            
-            // Calculating the blocks needed
-            int blocksNeeded = (data.length + BLOCK_SIZE - 1) / BLOCK_SIZE;
-            
-            // Check if we have enough free blocks (excluding current file blocks)
-
-            int availableBlocks = 0;
-            for (int i = 0; i < MAXBLOCKS; i++) {
-                if (freeBlockList[i]) {
-                    availableBlocks++;
+            // Also need metadata lock for block allocation/deallocation
+            metadataLock.lock();
+            try {
+                // Find the file
+                FEntry fileEntry = findFile(fileName);
+                if (fileEntry == null) {
+                    throw new Exception("File does not exist: " + fileName);
                 }
-            }
-            
-            // Add current file's blocks to available count
-
-            if (fileEntry.getFirstBlock() != -1) {
-                availableBlocks += countFileBlocks(fileEntry.getFirstBlock());
-            }
-            
-            if (blocksNeeded > availableBlocks) {
-                throw new Exception("Not enough free blocks available");
-            }
-            
-            // Store old block chain for rollback
-
-            short oldFirstBlock = fileEntry.getFirstBlock();
-            short oldFileSize = fileEntry.getFilesize();
-            
-            // Deallocate existing blocks if any
-
-            if (fileEntry.getFirstBlock() != -1) {
-                deallocateBlocks(fileEntry.getFirstBlock());
-            }
-            
-            if (blocksNeeded > 0) {
-                // Allocate blocks
-                List<Integer> allocatedBlocks = allocateBlocks(blocksNeeded);
-                if (allocatedBlocks.size() < blocksNeeded) {
-                    // Rollback: restore old blocks
-                    fileEntry.setFirstBlock(oldFirstBlock);
-                    fileEntry.setFilesize(oldFileSize);
+                
+                // Calculating the blocks needed
+                int blocksNeeded = (data.length + BLOCK_SIZE - 1) / BLOCK_SIZE;
+                
+                // Check if we have enough free blocks (excluding current file blocks)
+                int availableBlocks = 0;
+                for (int i = 0; i < MAXBLOCKS; i++) {
+                    if (freeBlockList[i]) {
+                        availableBlocks++;
+                    }
+                }
+                
+                // Add current file's blocks to available count
+                if (fileEntry.getFirstBlock() != -1) {
+                    availableBlocks += countFileBlocks(fileEntry.getFirstBlock());
+                }
+                
+                if (blocksNeeded > availableBlocks) {
                     throw new Exception("Not enough free blocks available");
                 }
                 
-                // Setting up the block chain
-                fileEntry.setFirstBlock((short) (int) allocatedBlocks.get(0));
-                for (int i = 0; i < allocatedBlocks.size() - 1; i++) {
-
-                    blockNodes[allocatedBlocks.get(i)].setNext(allocatedBlocks.get(i + 1));
-
-                }
-                blockNodes[allocatedBlocks.get(allocatedBlocks.size() - 1)].setNext(-1);
+                // Store old block chain for rollback
+                short oldFirstBlock = fileEntry.getFirstBlock();
+                short oldFileSize = fileEntry.getFilesize();
                 
-                // Writing data to blocks
-
-                int bytesWritten = 0;
-                for (int blockIndex : allocatedBlocks) {
-                    disk.seek(blockIndex * BLOCK_SIZE);
-                    int bytesToWrite = Math.min(BLOCK_SIZE, data.length - bytesWritten);
-                    disk.write(data, bytesWritten, bytesToWrite);
-
-                    bytesWritten += bytesToWrite;
+                // Deallocate existing blocks if any
+                if (fileEntry.getFirstBlock() != -1) {
+                    deallocateBlocks(fileEntry.getFirstBlock());
                 }
-            } else {
-                fileEntry.setFirstBlock((short) -1);
+                
+                if (blocksNeeded > 0) {
+                    // Allocate blocks
+                    List<Integer> allocatedBlocks = allocateBlocks(blocksNeeded);
+                    if (allocatedBlocks.size() < blocksNeeded) {
+                        // Rollback: restore old blocks
+                        fileEntry.setFirstBlock(oldFirstBlock);
+                        fileEntry.setFilesize(oldFileSize);
+                        throw new Exception("Not enough free blocks available");
+                    }
+                    
+                    // Setting up the block chain
+                    fileEntry.setFirstBlock((short) (int) allocatedBlocks.get(0));
+                    for (int i = 0; i < allocatedBlocks.size() - 1; i++) {
+                        blockNodes[allocatedBlocks.get(i)].setNext(allocatedBlocks.get(i + 1));
+                    }
+                    blockNodes[allocatedBlocks.get(allocatedBlocks.size() - 1)].setNext(-1);
+                    
+                    // Writing data to blocks
+                    int bytesWritten = 0;
+                    for (int blockIndex : allocatedBlocks) {
+                        disk.seek(blockIndex * BLOCK_SIZE);
+                        int bytesToWrite = Math.min(BLOCK_SIZE, data.length - bytesWritten);
+                        disk.write(data, bytesWritten, bytesToWrite);
+                        bytesWritten += bytesToWrite;
+                    }
+                } else {
+                    fileEntry.setFirstBlock((short) -1);
+                }
+                
+                // Update file size
+                fileEntry.setFilesize((short) data.length);
+                
+            } finally {
+                metadataLock.unlock();
             }
-            
-            // Update file size
-
-            fileEntry.setFilesize((short) data.length);
-            
         } finally {
-            globalLock.unlock();
+            fileLock.writeLock().unlock();
         }
     }
 
     public void deleteFile(String fileName) throws Exception {
-        globalLock.lock();
+        // Need both file lock and metadata lock for deletion
+        ReentrantReadWriteLock fileLock = getFileLock(fileName);
+        fileLock.writeLock().lock();
         try {
-            // Find the file
-            int fileIndex = -1;
-            for (int i = 0; i < MAXFILES; i++) {
-                if (inodeTable[i] != null && inodeTable[i].getFilename().equals(fileName)) {
-                    fileIndex = i;
-                    break;
+            metadataLock.lock();
+            try {
+                // Find the file
+                int fileIndex = -1;
+                for (int i = 0; i < MAXFILES; i++) {
+                    if (inodeTable[i] != null && inodeTable[i].getFilename().equals(fileName)) {
+                        fileIndex = i;
+                        break;
+                    }
                 }
+                
+                if (fileIndex == -1) {
+                    throw new Exception("File does not exist: " + fileName);
+                }
+                
+                FEntry fileEntry = inodeTable[fileIndex];
+                
+                // Deallocate blocks
+                if (fileEntry.getFirstBlock() != -1) {
+                    deallocateBlocks(fileEntry.getFirstBlock());
+                }
+                
+                // Remove from inode table
+                inodeTable[fileIndex] = null;
+                
+            } finally {
+                metadataLock.unlock();
             }
-            
-            if (fileIndex == -1) {
-                throw new Exception("File does not exist: " + fileName);
-            }
-            
-            FEntry fileEntry = inodeTable[fileIndex];
-            
-            // Deallocate blocks
-            if (fileEntry.getFirstBlock() != -1) {
-                deallocateBlocks(fileEntry.getFirstBlock());
-            }
-            
-            // Remove from inode table
-            inodeTable[fileIndex] = null;
-            
         } finally {
-            globalLock.unlock();
+            fileLock.writeLock().unlock();
+            // Clean up the per-file lock
+            removeFileLock(fileName);
         }
     }
 
 
 
     public String[] listFiles() throws Exception {
-        globalLock.lock();
+        // List operation only reads metadata, so use metadata read access
+        metadataLock.lock();
         try {
             List<String> fileNames = new ArrayList<>();
             for (int i = 0; i < MAXFILES; i++) {
                 if (inodeTable[i] != null) {
                     fileNames.add(inodeTable[i].getFilename());
-
                 }
             }
             return fileNames.toArray(new String[0]);
-
         } finally {
-            globalLock.unlock();
+            metadataLock.unlock();
         }
     }
 
@@ -278,7 +303,7 @@ public class FileSystemManager {
 
 
         for (int i = 0; i < MAXFILES; i++) {
-            
+
             if (inodeTable[i] != null && inodeTable[i].getFilename().equals(fileName)) {
                 return inodeTable[i];
             }

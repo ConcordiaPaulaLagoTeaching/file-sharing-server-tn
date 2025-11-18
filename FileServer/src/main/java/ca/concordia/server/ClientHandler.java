@@ -23,6 +23,7 @@ public class ClientHandler implements Runnable {
      * @param clientSocket The socket connection to the client
      * @param fsManager The file system manager instance (thread-safe)
      */
+
     public ClientHandler(Socket clientSocket, FileSystemManager fsManager) {
         this.clientSocket = clientSocket;
         this.fsManager = fsManager;
@@ -41,7 +42,7 @@ public class ClientHandler implements Runnable {
                 System.out.println("[" + threadName + "] Received command: " + line);
                 handleCommand(line.trim(), writer);
                 
-                // If client sends QUIT command, break the loop
+                // If client sends QUIT command then break the loop
                 if (line.trim().toUpperCase().equals("QUIT")) {
                     break;
                 }
@@ -65,8 +66,10 @@ public class ClientHandler implements Runnable {
      * @param line The command line received from client
      * @param writer The writer to send responses back to client
      */
+
     private void handleCommand(String line, PrintWriter writer) {
         try {
+
             if (line.isEmpty()) {
                 writer.println("ERROR: Empty command");
                 return;
@@ -97,7 +100,7 @@ public class ClientHandler implements Runnable {
                     break;
                     
                 case "QUIT":
-                    writer.println("SUCCESS: Disconnecting.");
+                    writer.println("SUCCESS: Disconnecting...");
                     return;
                     
                 default:
@@ -110,35 +113,48 @@ public class ClientHandler implements Runnable {
     }
     
     private void handleCreateCommand(String[] parts, PrintWriter writer) {
+
         if (parts.length < 2) {
+
             writer.println("ERROR: CREATE requires filename");
+
             return;
         }
         try {
             fsManager.createFile(parts[1]);
             writer.println("SUCCESS: File '" + parts[1] + "' created.");
+
         } catch (Exception e) {
             if (e.getMessage().toLowerCase().contains("filename") && e.getMessage().toLowerCase().contains("long")) {
+
                 writer.println("ERROR: filename too large");
             } else {
+
                 writer.println("ERROR: " + e.getMessage());
             }
         }
     }
     
+
     private void handleWriteCommand(String[] parts, PrintWriter writer) {
         if (parts.length < 3) {
             writer.println("ERROR: WRITE requires filename and content");
+
             return;
         }
         try {
+
             byte[] content = parts[2].getBytes();
+
             fsManager.writeFile(parts[1], content);
             writer.println("SUCCESS: Data written to file '" + parts[1] + "'");
+
         } catch (Exception e) {
             String errorMsg = e.getMessage().toLowerCase();
-            if (errorMsg.contains("not found") || errorMsg.contains("does not exist")) {
-                writer.println("ERROR: file " + parts[1] + " does not exist");
+
+            if (errorMsg.contains("not found") || errorMsg.contains("does not exist..")) {
+
+                writer.println("ERROR: file " + parts[1] + " does not exist.");
             } else if (errorMsg.contains("not enough") || errorMsg.contains("blocks") || errorMsg.contains("too large")) {
                 writer.println("ERROR: file too large");
             } else {
@@ -158,7 +174,8 @@ public class ClientHandler implements Runnable {
             writer.println(content);
         } catch (Exception e) {
             String errorMsg = e.getMessage().toLowerCase();
-            if (errorMsg.contains("not found") || errorMsg.contains("does not exist")) {
+            if (errorMsg.contains("not   found") || errorMsg.contains("does not exist..")) {
+
                 writer.println("ERROR: file " + parts[1] + " does not exist");
             } else {
                 writer.println("ERROR: " + e.getMessage());
@@ -167,9 +184,11 @@ public class ClientHandler implements Runnable {
     }
     
     private void handleDeleteCommand(String[] parts, PrintWriter writer) {
+
         if (parts.length < 2) {
             writer.println("ERROR: DELETE requires filename");
             return;
+            
         }
         try {
             fsManager.deleteFile(parts[1]);
