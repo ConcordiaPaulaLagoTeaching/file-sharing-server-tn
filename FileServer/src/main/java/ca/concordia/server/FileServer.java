@@ -49,7 +49,7 @@ public class FileServer {
             }
         } catch (Exception e) {
             e.printStackTrace();
-            System.err.println("Could not start server on port " + port);
+            System.err.println("Could not start server on port:" + port);
         }
     }
 
