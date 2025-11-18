@@ -20,6 +20,7 @@ public class SimpleWebClient {
         this.clientName = clientName;
     }
     
+    
     public void connectAndWait() {
         try (Socket socket = new Socket(serverHost, serverPort);
              BufferedReader reader = new BufferedReader(new InputStreamReader(socket.getInputStream()));

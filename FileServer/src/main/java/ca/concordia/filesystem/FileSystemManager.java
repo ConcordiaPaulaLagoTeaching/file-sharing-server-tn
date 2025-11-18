@@ -123,6 +123,7 @@ public class FileSystemManager {
             // Finding the file
             FEntry fileEntry = findFile(fileName);
             if (fileEntry == null) {
+
                 throw new Exception("file is not found:" + fileName);
             }
             
@@ -135,14 +136,18 @@ public class FileSystemManager {
             short currentBlock = fileEntry.getFirstBlock();
             
             while (currentBlock != -1 && bytesRead < fileEntry.getFilesize()) {
+
                 // Read from current block
+
                 disk.seek(currentBlock * BLOCK_SIZE);
                 int bytesToRead = Math.min(BLOCK_SIZE, fileEntry.getFilesize() - bytesRead);
                 disk.read(data, bytesRead, bytesToRead);
                 bytesRead += bytesToRead;
                 
                 // Move to next block
+
                 if (blockNodes[currentBlock].hasNext()) {
+
                     currentBlock = (short) blockNodes[currentBlock].getNext();
                 } else {
                     break;
@@ -291,9 +296,11 @@ public class FileSystemManager {
             for (int i = 0; i < MAXFILES; i++) {
                 if (inodeTable[i] != null) {
                     fileNames.add(inodeTable[i].getFilename());
+
                 }
             }
             return fileNames.toArray(new String[0]);
+
         } finally {
             metadataLock.unlock();
         }
@@ -303,7 +310,7 @@ public class FileSystemManager {
 
 
         for (int i = 0; i < MAXFILES; i++) {
-
+            
             if (inodeTable[i] != null && inodeTable[i].getFilename().equals(fileName)) {
                 return inodeTable[i];
             }
